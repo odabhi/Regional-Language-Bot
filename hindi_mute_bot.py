@@ -1,10 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import asyncio
-import nest_asyncio
-
-# Fix for Pydroid / already running event loop
-nest_asyncio.apply()
 
 # Your bot token
 TOKEN = "8293084237:AAFIadRPQZLXbiQ0IhYDeWdaxd3nGmuzTX0"
@@ -17,6 +13,9 @@ ROMAN_HINDI = ["kya", "tum", "hai", "kaise", "nahi", "kyu", "main", "aap", "hum"
 
 # Detect Hindi script or Romanized Hindi
 def contains_hindi(text):
+    if not text:
+        return False
+        
     text_lower = text.lower()
     # Check Devanagari script
     if any('\u0900' <= ch <= '\u097F' for ch in text):
@@ -106,14 +105,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text("✅ User has been unmuted by admin.")
 
-# --- MAIN BOT RUN ---
-if __name__ == "__main__":
+# Main function to run the bot
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("✅ Bot is running...")
+    app.run_polling()
 
-    # Run polling safely in Pydroid / already running loop
-    loop = asyncio.get_event_loop()
-    loop.create_task(app.run_polling())
+if __name__ == "__main__":
+    main()
