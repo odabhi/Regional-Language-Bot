@@ -18,7 +18,7 @@ approved_users = set()
 DB_NAME = "bot_database.db"
 
 # Your Telegram User ID (for broadcast feature)
-BOT_OWNER_ID = 8144093870  # Your user ID
+BOT_OWNER_ID = 8144093870
 
 # Conversation states for broadcast
 BROADCAST_MESSAGE = 1
