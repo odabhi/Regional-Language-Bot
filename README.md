@@ -22,7 +22,7 @@ A powerful Telegram bot that moderates Hindi language usage in groups and allows
 - `/abhihateu` - Disapprove a user (reply to user's message)  
 - `/abhilovelist` - Show all approved users
 
-### For Bot Owner (User ID: 8144093870):
+### For Bot Owner (User ID: 814xxxxxx):
 - `/broadcast` - Send message to all groups
 - `/listchats` - List all groups where bot is added
 
