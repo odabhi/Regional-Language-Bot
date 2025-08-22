@@ -114,5 +114,25 @@ def main():
     print("✅ Bot is running...")
     app.run_polling()
 
+# ADDED: Flask web server for Render compatibility
+from flask import Flask
+import threading
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Telegram Bot is running! Use /start in Telegram."
+
+def run_web_server():
+    app.run(host='0.0.0.0', port=10000)
+
+# Start the web server in a separate thread
+web_thread = threading.Thread(target=run_web_server)
+web_thread.daemon = True
+web_thread.start()
+
+print("Web server started on port 10000")
+
 if __name__ == "__main__":
     main()
