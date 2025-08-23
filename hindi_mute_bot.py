@@ -2,64 +2,18 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CallbackQueryHandler, CommandHandler
 import asyncio
 import re
-import sqlite3
-import time
 
 # Your bot token
 TOKEN = "8293084237:AAFIadRPQZLXbiQ0IhYDeWdaxd3nGmuzTX0"
 
-# Database name
-DB_NAME = "bot_database.db"
-
-# Store warnings
+# Store warnings in memory (resets when bot restarts)
 user_warnings = {}
 
-# Store approved users (immune to rules)
+# Store approved users in memory (resets when bot restarts)
 approved_users = set()
 
 # Romanized Hindi words list
 ROMAN_HINDI = ["kya", "tum", "hai", "kaise", "nahi", "kyu", "main", "aap", "hum", "ho", "raha", "kar", "mera", "tera"]
-
-# Initialize SQLite database
-def init_database():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS approved_users
-                 (user_id INTEGER PRIMARY KEY)''')
-    conn.commit()
-    conn.close()
-
-# Initialize the database
-init_database()
-
-# Database functions for SQLite
-def add_approved_user(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO approved_users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
-    conn.close()
-    approved_users.add(user_id)
-
-def remove_approved_user(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("DELETE FROM approved_users WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-    if user_id in approved_users:
-        approved_users.remove(user_id)
-
-def load_approved_users():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM approved_users")
-    approved_users_list = [row[0] for row in c.fetchall()]
-    conn.close()
-    return approved_users_list
-
-# Load approved users on startup
-approved_users = set(load_approved_users())
 
 # Detect Hindi script or Romanized Hindi
 def contains_hindi(text):
@@ -126,7 +80,7 @@ async def approve_user_command(update: Update, context: ContextTypes.DEFAULT_TYP
             target_user_id = target_user.id
             target_user_name = target_user.first_name
             
-            add_approved_user(target_user_id)
+            approved_users.add(target_user_id)
             await update.message.reply_text(
                 f"✅ User {target_user_name} has been approved! "
                 f"They can now use Hindi and links without restrictions."
@@ -158,7 +112,7 @@ async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_
             target_user_name = target_user.first_name
             
             if target_user_id in approved_users:
-                remove_approved_user(target_user_id)
+                approved_users.remove(target_user_id)
                 await update.message.reply_text(
                     f"❌ User {target_user_name} has been disapproved! "
                     f"They will now be monitored for Hindi and links."
@@ -336,7 +290,6 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("✅ Hindi Moderator Bot is running...")
-    print("✅ Approved users loaded:", len(approved_users))
     app.run_polling()
 
 if __name__ == "__main__":
