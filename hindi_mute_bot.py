@@ -1,114 +1,65 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CallbackQueryHandler, CommandHandler, ConversationHandler
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CallbackQueryHandler, CommandHandler
 import asyncio
 import re
+import sqlite3
 import time
-from pymongo import MongoClient
 
 # Your bot token
 TOKEN = "8293084237:AAFIadRPQZLXbiQ0IhYDeWdaxd3nGmuzTX0"
 
-# Your MongoDB connection string
-# Your MongoDB connection string
-MONGODB_URI = "mongodb+srv://Abhi001962:prince69pass@cluster0.me9wqzi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+# Database name
+DB_NAME = "bot_database.db"
 
-# Initialize MongoDB with better error handling
-try:
-    client = MongoClient(
-        MONGODB_URI,
-        serverSelectionTimeoutMS=5000,  # 5 second timeout
-        connectTimeoutMS=30000,         # 30 second connection timeout
-        socketTimeoutMS=30000           # 30 second socket timeout
-    )
-    # Test the connection
-    client.admin.command('ping')
-    db = client.hindi_bot_db
-    chats_collection = db.chats
-    approved_collection = db.approved_users
-    warnings_collection = db.warnings
-    print("✅ Connected to MongoDB successfully!")
-except Exception as e:
-    print(f"❌ MongoDB connection error: {e}")
-    print("⚠️  Using in-memory storage as fallback")
-    chats_collection = None
-    approved_collection = None
-    warnings_collection = None
-
-# In-memory storage as fallback
+# Store warnings
 user_warnings = {}
+
+# Store approved users (immune to rules)
 approved_users = set()
-chats_memory = []
-
-# Your Telegram User ID (for broadcast feature)
-BOT_OWNER_ID = 8144093870
-
-# Conversation states for broadcast
-BROADCAST_MESSAGE = 1
 
 # Romanized Hindi words list
 ROMAN_HINDI = ["kya", "tum", "hai", "kaise", "nahi", "kyu", "main", "aap", "hum", "ho", "raha", "kar", "mera", "tera"]
 
-# Database functions
-def add_chat_to_db(chat_id, title):
-    if chats_collection:
-        chats_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"chat_id": chat_id, "title": title, "added_date": time.strftime("%Y-%m-%d %H:%M:%S")}},
-            upsert=True
-        )
-    else:
-        # Fallback to memory
-        for chat in chats_memory:
-            if chat["chat_id"] == chat_id:
-                return
-        chats_memory.append({"chat_id": chat_id, "title": title, "added_date": time.strftime("%Y-%m-%d %H:%M:%S")})
+# Initialize SQLite database
+def init_database():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS approved_users
+                 (user_id INTEGER PRIMARY KEY)''')
+    conn.commit()
+    conn.close()
 
-def get_all_chats():
-    if chats_collection:
-        return list(chats_collection.find({}, {"_id": 0, "chat_id": 1, "title": 1}))
-    else:
-        return chats_memory
+# Initialize the database
+init_database()
 
+# Database functions for SQLite
 def add_approved_user(user_id):
-    if approved_collection:
-        approved_collection.update_one(
-            {"user_id": user_id},
-            {"$set": {"user_id": user_id}},
-            upsert=True
-        )
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO approved_users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
     approved_users.add(user_id)
 
 def remove_approved_user(user_id):
-    if approved_collection:
-        approved_collection.delete_one({"user_id": user_id})
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM approved_users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
     if user_id in approved_users:
         approved_users.remove(user_id)
 
-def get_approved_users():
-    if approved_collection:
-        return [user["user_id"] for user in approved_collection.find({}, {"_id": 0, "user_id": 1})]
-    return list(approved_users)
+def load_approved_users():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM approved_users")
+    approved_users_list = [row[0] for row in c.fetchall()]
+    conn.close()
+    return approved_users_list
 
-def add_warning(user_id):
-    if warnings_collection:
-        warnings_collection.update_one(
-            {"user_id": user_id},
-            {"$inc": {"warnings": 1}},
-            upsert=True
-        )
-    user_warnings[user_id] = user_warnings.get(user_id, 0) + 1
-
-def get_warnings(user_id):
-    if warnings_collection:
-        user = warnings_collection.find_one({"user_id": user_id})
-        return user["warnings"] if user else 0
-    return user_warnings.get(user_id, 0)
-
-def reset_warnings(user_id):
-    if warnings_collection:
-        warnings_collection.delete_one({"user_id": user_id})
-    if user_id in user_warnings:
-        user_warnings[user_id] = 0
+# Load approved users on startup
+approved_users = set(load_approved_users())
 
 # Detect Hindi script or Romanized Hindi
 def contains_hindi(text):
@@ -206,7 +157,7 @@ async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_
             target_user_id = target_user.id
             target_user_name = target_user.first_name
             
-            if target_user_id in get_approved_users():
+            if target_user_id in approved_users:
                 remove_approved_user(target_user_id)
                 await update.message.reply_text(
                     f"❌ User {target_user_name} has been disapproved! "
@@ -228,15 +179,13 @@ async def approved_list_command(update: Update, context: ContextTypes.DEFAULT_TY
     if not update.message:
         return
         
-    approved_users_list = get_approved_users()
-    
-    if not approved_users_list:
+    if not approved_users:
         await update.message.reply_text("No users are currently approved.")
         return
         
     # Get usernames for approved users
     user_list = []
-    for user_id in approved_users_list:
+    for user_id in approved_users:
         try:
             chat_member = await context.bot.get_chat_member(update.message.chat.id, user_id)
             user_name = chat_member.user.first_name
@@ -248,114 +197,8 @@ async def approved_list_command(update: Update, context: ContextTypes.DEFAULT_TY
     user_list_text = "\n".join(user_list)
     await update.message.reply_text(
         f"✅ Approved Users List:\n\n{user_list_text}\n\n"
-        f"Total: {len(approved_users_list)} users"
+        f"Total: {len(approved_users)} users"
     )
-
-# Track when bot is added to groups
-async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message and update.message.new_chat_members:
-        for member in update.message.new_chat_members:
-            if member.id == context.bot.id:  # Bot itself was added
-                chat_id = update.message.chat.id
-                chat_title = update.message.chat.title
-                
-                # Store in database
-                add_chat_to_db(chat_id, chat_title)
-                
-                await update.message.reply_text(
-                    "✅ Thanks for adding me! I'll help moderate Hindi language in this group."
-                )
-
-# Broadcast command - only for bot owner
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != BOT_OWNER_ID:
-        await update.message.reply_text("❌ This command is only for bot owner.")
-        return ConversationHandler.END
-        
-    await update.message.reply_text(
-        "📢 Please send the message you want to broadcast to all groups.\n\n"
-        "Type /cancel to cancel the broadcast."
-    )
-    return BROADCAST_MESSAGE
-
-# Handle broadcast message
-async def receive_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    broadcast_text = update.message.text
-    
-    # Get chats from database
-    chats = get_all_chats()
-    
-    total_chats = len(chats)
-    
-    if total_chats == 0:
-        await update.message.reply_text("❌ No groups found in database. Add the bot to groups first!")
-        return ConversationHandler.END
-    
-    successful = 0
-    failed = 0
-    
-    progress_msg = await update.message.reply_text(f"📤 Starting broadcast to {total_chats} chats...")
-    
-    for i, chat in enumerate(chats):
-        chat_id = chat["chat_id"]
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"📢 Announcement from Bot Owner:\n\n{broadcast_text}"
-            )
-            successful += 1
-            
-            # Update progress every 5 messages
-            if (i + 1) % 5 == 0:
-                await progress_msg.edit_text(
-                    f"📤 Broadcasting... {i+1}/{total_chats} chats\n"
-                    f"✅ Successful: {successful}\n"
-                    f"❌ Failed: {failed}"
-                )
-                
-        except Exception as e:
-            print(f"Failed to send to chat {chat_id}: {e}")
-            failed += 1
-            
-        await asyncio.sleep(0.3)  # Rate limiting
-    
-    await progress_msg.edit_text(
-        f"✅ Broadcast completed!\n\n"
-        f"✅ Successful: {successful}\n"
-        f"❌ Failed: {failed}\n"
-        f"📊 Total: {total_chats}"
-    )
-    return ConversationHandler.END
-
-# Cancel broadcast
-async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Broadcast cancelled.")
-    return ConversationHandler.END
-
-# Command to list all chats where bot is added
-async def list_chats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != BOT_OWNER_ID:
-        await update.message.reply_text("❌ This command is only for bot owner.")
-        return
-        
-    chats = get_all_chats()
-    
-    if not chats:
-        await update.message.reply_text("No chats found in database.")
-        return
-        
-    message = "📋 Chats where bot is added:\n\n"
-    for i, chat in enumerate(chats, 1):
-        message += f"{i}. {chat.get('title', 'Unknown')} (ID: {chat['chat_id']})\n"
-        message += f"   Added: {chat.get('added_date', 'Unknown')}\n\n"
-    
-    # Telegram has a message length limit
-    if len(message) > 4096:
-        for x in range(0, len(message), 4096):
-            await update.message.reply_text(message[x:x+4096])
-            await asyncio.sleep(1)
-    else:
-        await update.message.reply_text(message)
 
 # Handle messages
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -370,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
 
     # Check if user is approved (immune to rules)
-    if user_id in get_approved_users():
+    if user_id in approved_users:
         return  # Skip moderation for approved users
 
     # Check for links
@@ -416,8 +259,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Count warnings for normal users
-        warn_count = get_warnings(user_id) + 1
-        add_warning(user_id)
+        if user_id not in user_warnings:
+            user_warnings[user_id] = 0
+        user_warnings[user_id] += 1
+        warn_count = user_warnings[user_id]
 
         if warn_count < 3:
             await context.bot.send_message(
@@ -442,7 +287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             # Reset warning
-            reset_warnings(user_id)
+            user_warnings[user_id] = 0
 
             # Inline button to unmute
             keyboard = [[InlineKeyboardButton("✅ Unmute", callback_data=f"unmute_{user_id}")]]
@@ -485,25 +330,13 @@ def main():
     app.add_handler(CommandHandler("abhiloveu", approve_user_command))
     app.add_handler(CommandHandler("abhihateu", disapprove_user_command))
     app.add_handler(CommandHandler("abhilovelist", approved_list_command))
-    app.add_handler(CommandHandler("listchats", list_chats_command))
-    
-    # Add broadcast conversation handler
-    broadcast_handler = ConversationHandler(
-        entry_points=[CommandHandler('broadcast', broadcast_command)],
-        states={
-            BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_broadcast_message)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel_broadcast)]
-    )
-    app.add_handler(broadcast_handler)
     
     # Add message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, track_chats))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("✅ Bot is running with MongoDB and broadcast feature...")
-    print("🌐 MongoDB Connected:", MONGODB_URI)
+    print("✅ Hindi Moderator Bot is running...")
+    print("✅ Approved users loaded:", len(approved_users))
     app.run_polling()
 
 if __name__ == "__main__":
