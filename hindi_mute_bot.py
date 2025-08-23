@@ -9,11 +9,19 @@ from pymongo import MongoClient
 TOKEN = "8293084237:AAFIadRPQZLXbiQ0IhYDeWdaxd3nGmuzTX0"
 
 # Your MongoDB connection string
+# Your MongoDB connection string
 MONGODB_URI = "mongodb+srv://Abhi001962:prince69pass@cluster0.me9wqzi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-# Initialize MongoDB
+# Initialize MongoDB with better error handling
 try:
-    client = MongoClient(MONGODB_URI)
+    client = MongoClient(
+        MONGODB_URI,
+        serverSelectionTimeoutMS=5000,  # 5 second timeout
+        connectTimeoutMS=30000,         # 30 second connection timeout
+        socketTimeoutMS=30000           # 30 second socket timeout
+    )
+    # Test the connection
+    client.admin.command('ping')
     db = client.hindi_bot_db
     chats_collection = db.chats
     approved_collection = db.approved_users
@@ -23,6 +31,8 @@ except Exception as e:
     print(f"❌ MongoDB connection error: {e}")
     print("⚠️  Using in-memory storage as fallback")
     chats_collection = None
+    approved_collection = None
+    warnings_collection = None
 
 # In-memory storage as fallback
 user_warnings = {}
