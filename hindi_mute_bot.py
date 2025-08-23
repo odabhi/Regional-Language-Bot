@@ -55,8 +55,12 @@ async def approve_user_command(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = user.id
     
     # Check if user is admin
-    admins = await context.bot.get_chat_administrators(chat.id)
-    admin_ids = [admin.user.id for admin in admins]
+    try:
+        admins = await context.bot.get_chat_administrators(chat.id)
+        admin_ids = [admin.user.id for admin in admins]
+    except:
+        await update.message.reply_text("❌ I need to be admin in this group to check administrators.")
+        return
     
     if user_id in admin_ids:
         if update.message.reply_to_message:
@@ -67,12 +71,14 @@ async def approve_user_command(update: Update, context: ContextTypes.DEFAULT_TYP
             approved_users.add(target_user_id)
             await update.message.reply_text(
                 f"✅ User {target_user_name} has been approved! "
-                f"They can now use Hindi and links without restrictions."
+                f"They can now use Hindi without restrictions."
             )
         else:
             await update.message.reply_text(
                 "Please reply to a user's message with /abhiloveu to approve them."
             )
+    else:
+        await update.message.reply_text("❌ You need to be an admin to use this command.")
 
 # Disapprove user command
 async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,8 +90,12 @@ async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_
     user_id = user.id
     
     # Check if user is admin
-    admins = await context.bot.get_chat_administrators(chat.id)
-    admin_ids = [admin.user.id for admin in admins]
+    try:
+        admins = await context.bot.get_chat_administrators(chat.id)
+        admin_ids = [admin.user.id for admin in admins]
+    except:
+        await update.message.reply_text("❌ I need to be admin in this group to check administrators.")
+        return
     
     if user_id in admin_ids:
         if update.message.reply_to_message:
@@ -97,7 +107,7 @@ async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_
                 approved_users.remove(target_user_id)
                 await update.message.reply_text(
                     f"❌ User {target_user_name} has been disapproved! "
-                    f"They will now be monitored for Hindi and links."
+                    f"They will now be monitored for Hindi."
                 )
             else:
                 await update.message.reply_text(
@@ -107,6 +117,8 @@ async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text(
                 "Please reply to a user's message with /abhihateu to disapprove them."
             )
+    else:
+        await update.message.reply_text("❌ You need to be an admin to use this command.")
 
 # Show approved users list
 async def approved_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,12 +164,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if contains_hindi(text):
         # Get admin IDs
-        admins = await context.bot.get_chat_administrators(chat.id)
-        admin_ids = [admin.user.id for admin in admins]
+        try:
+            admins = await context.bot.get_chat_administrators(chat.id)
+            admin_ids = [admin.user.id for admin in admins]
+        except:
+            # If bot can't get admin list, continue with moderation
+            admin_ids = []
 
         # Admin message → delete + warn
         if user_id in admin_ids:
-            await update.message.delete()
+            try:
+                await update.message.delete()
+            except:
+                pass  # If we can't delete, just continue
             await context.bot.send_message(
                 chat_id=chat.id,
                 text=f"Admin {user_name} {username} message deleted. Please avoid Hindi text."
@@ -178,12 +197,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             # Mute user for 15 minutes
-            await context.bot.restrict_chat_member(
-                chat_id=chat.id,
-                user_id=user_id,
-                permissions={"can_send_messages": False},
-                until_date=int(asyncio.get_event_loop().time()) + 900  # 15 min
-            )
+            try:
+                await context.bot.restrict_chat_member(
+                    chat_id=chat.id,
+                    user_id=user_id,
+                    permissions={"can_send_messages": False},
+                    until_date=int(asyncio.get_event_loop().time()) + 900  # 15 min
+                )
+            except:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=f"❌ Could not mute user {user_name}. Bot needs admin permissions!"
+                )
+                return
 
             # Reset warning
             user_warnings[user_id] = 0
@@ -209,19 +235,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = query.message.chat.id
 
         # Unmute user
-        await context.bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            permissions={"can_send_messages": True}
-        )
-
-        await query.edit_message_text("✅ User has been unmuted by admin.")
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions={"can_send_messages": True}
+            )
+            await query.edit_message_text("✅ User has been unmuted by admin.")
+        except:
+            await query.edit_message_text("❌ Could not unmute user. Bot needs admin permissions!")
 
 # --- MAIN BOT RUN ---
-if __name__ == "__main__":
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Add command handlers - THIS IS WHAT WAS MISSING!
+    # Add command handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("ocr", ocr_command))
     app.add_handler(CommandHandler("abhiloveu", approve_user_command))
@@ -233,7 +261,7 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(button_handler))
 
     print("✅ Bot is running with all commands...")
+    app.run_polling()
 
-    # Run polling safely in Pydroid / already running loop
-    loop = asyncio.get_event_loop()
-    loop.create_task(app.run_polling())
+if __name__ == "__main__":
+    main()
