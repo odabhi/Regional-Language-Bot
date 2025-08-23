@@ -2,20 +2,32 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CallbackQueryHandler, CommandHandler, ConversationHandler
 import asyncio
 import re
-import sqlite3
 import time
+from pymongo import MongoClient
 
 # Your bot token
 TOKEN = "8293084237:AAFIadRPQZLXbiQ0IhYDeWdaxd3nGmuzTX0"
 
-# Store warnings
+# Your MongoDB connection string
+MONGODB_URI = "mongodb+srv://Abhi001962:prince69pass@cluster0.me9wqzi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
+# Initialize MongoDB
+try:
+    client = MongoClient(MONGODB_URI)
+    db = client.hindi_bot_db
+    chats_collection = db.chats
+    approved_collection = db.approved_users
+    warnings_collection = db.warnings
+    print("✅ Connected to MongoDB successfully!")
+except Exception as e:
+    print(f"❌ MongoDB connection error: {e}")
+    print("⚠️  Using in-memory storage as fallback")
+    chats_collection = None
+
+# In-memory storage as fallback
 user_warnings = {}
-
-# Store approved users (immune to rules)
 approved_users = set()
-
-# Database name
-DB_NAME = "bot_database.db"
+chats_memory = []
 
 # Your Telegram User ID (for broadcast feature)
 BOT_OWNER_ID = 8144093870
@@ -26,14 +38,67 @@ BROADCAST_MESSAGE = 1
 # Romanized Hindi words list
 ROMAN_HINDI = ["kya", "tum", "hai", "kaise", "nahi", "kyu", "main", "aap", "hum", "ho", "raha", "kar", "mera", "tera"]
 
-# Initialize database
-def init_database():
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS chats
-                 (chat_id INTEGER PRIMARY KEY, title TEXT, added_date TEXT)''')
-    conn.commit()
-    conn.close()
+# Database functions
+def add_chat_to_db(chat_id, title):
+    if chats_collection:
+        chats_collection.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"chat_id": chat_id, "title": title, "added_date": time.strftime("%Y-%m-%d %H:%M:%S")}},
+            upsert=True
+        )
+    else:
+        # Fallback to memory
+        for chat in chats_memory:
+            if chat["chat_id"] == chat_id:
+                return
+        chats_memory.append({"chat_id": chat_id, "title": title, "added_date": time.strftime("%Y-%m-%d %H:%M:%S")})
+
+def get_all_chats():
+    if chats_collection:
+        return list(chats_collection.find({}, {"_id": 0, "chat_id": 1, "title": 1}))
+    else:
+        return chats_memory
+
+def add_approved_user(user_id):
+    if approved_collection:
+        approved_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id}},
+            upsert=True
+        )
+    approved_users.add(user_id)
+
+def remove_approved_user(user_id):
+    if approved_collection:
+        approved_collection.delete_one({"user_id": user_id})
+    if user_id in approved_users:
+        approved_users.remove(user_id)
+
+def get_approved_users():
+    if approved_collection:
+        return [user["user_id"] for user in approved_collection.find({}, {"_id": 0, "user_id": 1})]
+    return list(approved_users)
+
+def add_warning(user_id):
+    if warnings_collection:
+        warnings_collection.update_one(
+            {"user_id": user_id},
+            {"$inc": {"warnings": 1}},
+            upsert=True
+        )
+    user_warnings[user_id] = user_warnings.get(user_id, 0) + 1
+
+def get_warnings(user_id):
+    if warnings_collection:
+        user = warnings_collection.find_one({"user_id": user_id})
+        return user["warnings"] if user else 0
+    return user_warnings.get(user_id, 0)
+
+def reset_warnings(user_id):
+    if warnings_collection:
+        warnings_collection.delete_one({"user_id": user_id})
+    if user_id in user_warnings:
+        user_warnings[user_id] = 0
 
 # Detect Hindi script or Romanized Hindi
 def contains_hindi(text):
@@ -100,7 +165,7 @@ async def approve_user_command(update: Update, context: ContextTypes.DEFAULT_TYP
             target_user_id = target_user.id
             target_user_name = target_user.first_name
             
-            approved_users.add(target_user_id)
+            add_approved_user(target_user_id)
             await update.message.reply_text(
                 f"✅ User {target_user_name} has been approved! "
                 f"They can now use Hindi and links without restrictions."
@@ -109,6 +174,8 @@ async def approve_user_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(
                 "Please reply to a user's message with /abhiloveu to approve them."
             )
+    else:
+        await update.message.reply_text("❌ You need to be an admin to use this command.")
 
 # Disapprove user command
 async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,8 +196,8 @@ async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_
             target_user_id = target_user.id
             target_user_name = target_user.first_name
             
-            if target_user_id in approved_users:
-                approved_users.remove(target_user_id)
+            if target_user_id in get_approved_users():
+                remove_approved_user(target_user_id)
                 await update.message.reply_text(
                     f"❌ User {target_user_name} has been disapproved! "
                     f"They will now be monitored for Hindi and links."
@@ -143,19 +210,23 @@ async def disapprove_user_command(update: Update, context: ContextTypes.DEFAULT_
             await update.message.reply_text(
                 "Please reply to a user's message with /abhihateu to disapprove them."
             )
+    else:
+        await update.message.reply_text("❌ You need to be an admin to use this command.")
 
 # Show approved users list
 async def approved_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
         
-    if not approved_users:
+    approved_users_list = get_approved_users()
+    
+    if not approved_users_list:
         await update.message.reply_text("No users are currently approved.")
         return
         
     # Get usernames for approved users
     user_list = []
-    for user_id in approved_users:
+    for user_id in approved_users_list:
         try:
             chat_member = await context.bot.get_chat_member(update.message.chat.id, user_id)
             user_name = chat_member.user.first_name
@@ -167,7 +238,7 @@ async def approved_list_command(update: Update, context: ContextTypes.DEFAULT_TY
     user_list_text = "\n".join(user_list)
     await update.message.reply_text(
         f"✅ Approved Users List:\n\n{user_list_text}\n\n"
-        f"Total: {len(approved_users)} users"
+        f"Total: {len(approved_users_list)} users"
     )
 
 # Track when bot is added to groups
@@ -179,12 +250,7 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_title = update.message.chat.title
                 
                 # Store in database
-                conn = sqlite3.connect(DB_NAME)
-                c = conn.cursor()
-                c.execute("INSERT OR IGNORE INTO chats (chat_id, title, added_date) VALUES (?, ?, datetime('now'))",
-                         (chat_id, chat_title))
-                conn.commit()
-                conn.close()
+                add_chat_to_db(chat_id, chat_title)
                 
                 await update.message.reply_text(
                     "✅ Thanks for adding me! I'll help moderate Hindi language in this group."
@@ -205,20 +271,23 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Handle broadcast message
 async def receive_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_text = update.message.text
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT chat_id FROM chats")
-    chats = c.fetchall()
-    conn.close()
+    
+    # Get chats from database
+    chats = get_all_chats()
     
     total_chats = len(chats)
+    
+    if total_chats == 0:
+        await update.message.reply_text("❌ No groups found in database. Add the bot to groups first!")
+        return ConversationHandler.END
+    
     successful = 0
     failed = 0
     
     progress_msg = await update.message.reply_text(f"📤 Starting broadcast to {total_chats} chats...")
     
     for i, chat in enumerate(chats):
-        chat_id = chat[0]
+        chat_id = chat["chat_id"]
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -226,8 +295,8 @@ async def receive_broadcast_message(update: Update, context: ContextTypes.DEFAUL
             )
             successful += 1
             
-            # Update progress every 10 messages
-            if (i + 1) % 10 == 0:
+            # Update progress every 5 messages
+            if (i + 1) % 5 == 0:
                 await progress_msg.edit_text(
                     f"📤 Broadcasting... {i+1}/{total_chats} chats\n"
                     f"✅ Successful: {successful}\n"
@@ -235,9 +304,10 @@ async def receive_broadcast_message(update: Update, context: ContextTypes.DEFAUL
                 )
                 
         except Exception as e:
+            print(f"Failed to send to chat {chat_id}: {e}")
             failed += 1
             
-        await asyncio.sleep(0.3)  # Rate limiting to avoid flood
+        await asyncio.sleep(0.3)  # Rate limiting
     
     await progress_msg.edit_text(
         f"✅ Broadcast completed!\n\n"
@@ -258,21 +328,18 @@ async def list_chats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ This command is only for bot owner.")
         return
         
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT chat_id, title, added_date FROM chats")
-    chats = c.fetchall()
-    conn.close()
+    chats = get_all_chats()
     
     if not chats:
         await update.message.reply_text("No chats found in database.")
         return
         
     message = "📋 Chats where bot is added:\n\n"
-    for i, (chat_id, title, added_date) in enumerate(chats, 1):
-        message += f"{i}. {title} (ID: {chat_id})\n   Added: {added_date}\n\n"
+    for i, chat in enumerate(chats, 1):
+        message += f"{i}. {chat.get('title', 'Unknown')} (ID: {chat['chat_id']})\n"
+        message += f"   Added: {chat.get('added_date', 'Unknown')}\n\n"
     
-    # Telegram has a message length limit, so we might need to split
+    # Telegram has a message length limit
     if len(message) > 4096:
         for x in range(0, len(message), 4096):
             await update.message.reply_text(message[x:x+4096])
@@ -293,7 +360,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
 
     # Check if user is approved (immune to rules)
-    if user_id in approved_users:
+    if user_id in get_approved_users():
         return  # Skip moderation for approved users
 
     # Check for links
@@ -303,7 +370,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_ids = [admin.user.id for admin in admins]
 
         # Delete message and notify
-        await update.message.delete()
+        try:
+            await update.message.delete()
+        except:
+            pass  # Ignore if we can't delete
         
         if user_id in admin_ids:
             await context.bot.send_message(
@@ -325,7 +395,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Admin message → delete + warn
         if user_id in admin_ids:
-            await update.message.delete()
+            try:
+                await update.message.delete()
+            except:
+                pass
             await context.bot.send_message(
                 chat_id=chat.id,
                 text=f"Admin {user_name} {username} message deleted. Please avoid Hindi text."
@@ -333,10 +406,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Count warnings for normal users
-        if user_id not in user_warnings:
-            user_warnings[user_id] = 0
-        user_warnings[user_id] += 1
-        warn_count = user_warnings[user_id]
+        warn_count = get_warnings(user_id) + 1
+        add_warning(user_id)
 
         if warn_count < 3:
             await context.bot.send_message(
@@ -346,15 +417,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             # Mute user for 15 minutes
-            await context.bot.restrict_chat_member(
-                chat_id=chat.id,
-                user_id=user_id,
-                permissions={"can_send_messages": False},
-                until_date=int(asyncio.get_event_loop().time()) + 900  # 15 min
-            )
+            try:
+                await context.bot.restrict_chat_member(
+                    chat_id=chat.id,
+                    user_id=user_id,
+                    permissions={"can_send_messages": False},
+                    until_date=int(asyncio.get_event_loop().time()) + 900  # 15 min
+                )
+            except:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=f"❌ Could not mute user {user_name}. Bot needs admin permissions!"
+                )
+                return
 
             # Reset warning
-            user_warnings[user_id] = 0
+            reset_warnings(user_id)
 
             # Inline button to unmute
             keyboard = [[InlineKeyboardButton("✅ Unmute", callback_data=f"unmute_{user_id}")]]
@@ -377,19 +455,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = query.message.chat.id
 
         # Unmute user
-        await context.bot.restrict_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            permissions={"can_send_messages": True}
-        )
-
-        await query.edit_message_text("✅ User has been unmuted by admin.")
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                permissions={"can_send_messages": True}
+            )
+            await query.edit_message_text("✅ User has been unmuted by admin.")
+        except:
+            await query.edit_message_text("❌ Could not unmute user. Bot needs admin permissions!")
 
 # Main function to run the bot
 def main():
-    # Initialize database
-    init_database()
-    
     app = ApplicationBuilder().token(TOKEN).build()
     
     # Add command handlers
@@ -415,7 +492,8 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, track_chats))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("✅ Bot is running with broadcast feature...")
+    print("✅ Bot is running with MongoDB and broadcast feature...")
+    print("🌐 MongoDB Connected:", MONGODB_URI)
     app.run_polling()
 
 if __name__ == "__main__":
