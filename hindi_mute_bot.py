@@ -272,28 +272,44 @@ async def abhi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     data = get_user_data(user_id)
     
-    # Check if user has a blessing active
-    current_time = time.time()
-    if user_id in blessings_data and blessings_data[user_id]['expiry'] > current_time:
-        remaining = int(blessings_data[user_id]['expiry'] - current_time)
-        await update.message.reply_text(
-            f"✨ You already have an active blessing! {remaining}s remaining."
-        )
+    if not context.args:
+        await update.message.reply_text("Usage: /abhi <amount>\nExample: /abhi 100")
         return
     
-    # Create blessing
-    blessings_data[user_id] = {
-        'expiry': current_time + BLESSING_DURATION,
-        'message_id': update.message.message_id
-    }
-    
-    await update.message.reply_text(
-        f"🙏 You've been blessed! For the next {BLESSING_DURATION//60} minutes:\n"
-        f"• You're protected from theft\n"
-        f"• Earn double from /ocrcoin\n"
-        f"• Animals produce faster\n"
-        f"⌛ Blessing expires in {BLESSING_DURATION//60} minutes"
-    )
+    try:
+        bet_amount = int(context.args[0])
+        if bet_amount <= 0:
+            await update.message.reply_text("Please enter a positive amount to bet.")
+            return
+        
+        if bet_amount > data['ocr_wallet']:
+            await update.message.reply_text(
+                f"You don't have enough coins in your wallet!\n"
+                f"Your balance: {data['ocr_wallet']} 🪙\n"
+                f"Bet amount: {bet_amount} 🪙"
+            )
+            return
+        
+        # 70% chance to win, 30% chance to lose
+        if random.random() < 0.7:  # 70% win chance
+            # Win double the bet amount
+            win_amount = bet_amount * 2
+            data['ocr_wallet'] += win_amount
+            await update.message.reply_text(
+                f"🎉 You won! Abhi blessed you with double the amount!\n"
+                f"💰 Won: {win_amount} 🪙\n"
+                f"💵 New balance: {data['ocr_wallet']} 🪙"
+            )
+        else:  # 30% lose chance
+            # Lose the bet amount
+            data['ocr_wallet'] -= bet_amount
+            await update.message.reply_text(
+                f"😔 You lost! Abhi took your bet amount.\n"
+                f"💸 Lost: {bet_amount} 🪙\n"
+                f"💵 New balance: {data['ocr_wallet']} 🪙"
+            )
+    except ValueError:
+        await update.message.reply_text("Please enter a valid number.")
 
 async def chori_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
