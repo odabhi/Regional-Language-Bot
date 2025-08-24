@@ -12,10 +12,15 @@ nest_asyncio.apply()
 # Your bot token
 TOKEN = "8293084237:AAFIadRPQZLXbiQ0IhYDeWdaxd3nGmuzTX0"
 
+# Your special user ID (replace with your actual Telegram user ID)
+YOUR_USER_ID = 123456789  # Change this to your actual user ID
+
 # ==================== STORAGE ====================
 user_warnings = {}
 approved_users = set()
 user_data = {}  # OCR Game data
+username_to_id = {}  # Mapping usernames to user IDs
+blessings_data = {}  # Store blessings messages and their expiration
 
 # ==================== GAME CONFIG ====================
 ROMAN_HINDI = ["kya", "tum", "hai", "kaise", "nahi", "kyu", "main", "aap", "hum", "ho", "raha", "kar", "mera", "tera"]
@@ -29,6 +34,10 @@ SHIELD_COST = 300
 EGG_VALUE = 150
 MILK_VALUE = 4000
 THEFT_PERCENTAGE = 0.8  # 80%
+EGG_COOLDOWN = 30 * 60  # 30 minutes
+MILK_COOLDOWN = 6 * 3600  # 6 hours
+BLESSING_REWARD = 300  # OCR coins for blessing
+BLESSING_DURATION = 5 * 60  # 5 minutes in seconds
 
 # ==================== HELPER FUNCTIONS ====================
 def get_user_data(user_id):
@@ -49,6 +58,14 @@ def get_user_data(user_id):
 def can_claim_ocr_coin(user_id):
     data = get_user_data(user_id)
     return time.time() - data['last_ocr_coin'] >= OCR_COIN_COOLDOWN
+
+def can_collect_eggs(user_id):
+    data = get_user_data(user_id)
+    return time.time() - data['last_egg_collection'] >= EGG_COOLDOWN
+
+def can_collect_milk(user_id):
+    data = get_user_data(user_id)
+    return time.time() - data['last_milk_collection'] >= MILK_COOLDOWN
 
 # ==================== HINDI DETECTION ====================
 def contains_hindi(text):
@@ -138,79 +155,202 @@ async def ocrwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Your OCR Coin Balance:\n"
         f"Wallet: {data['ocr_wallet']} 🪙\n"
         f"Bank: {data['ocr_bank']} 🏦\n"
-        f"Total: {data['ocr_wallet'] + data['ocr_bank']} 🪙"
+        f"Total: {data['ocr_wallet'] + data['ocr_bank']} 🪙\n"
+        f"Shields: {data['shields']} 🛡️\n"
+        f"Hens: {data['pets']['hen']} 🐓\n"
+        f"Cows: {data['pets']['cow']} 🐄"
     )
+
+async def ocrinfo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    data = get_user_data(user_id)
+    
+    # Calculate next collection times
+    next_egg = ""
+    if data['pets']['hen'] > 0:
+        if can_collect_eggs(user_id):
+            next_egg = "Ready to collect!"
+        else:
+            next_collection = data['last_egg_collection'] + EGG_COOLDOWN
+            wait_time = next_collection - time.time()
+            minutes = int(wait_time // 60)
+            next_egg = f"{minutes} minutes"
+    
+    next_milk = ""
+    if data['pets']['cow'] > 0:
+        if can_collect_milk(user_id):
+            next_milk = "Ready to collect!"
+        else:
+            next_collection = data['last_milk_collection'] + MILK_COOLDOWN
+            wait_time = next_collection - time.time()
+            hours = int(wait_time // 3600)
+            minutes = int((wait_time % 3600) // 60)
+            next_milk = f"{hours}h {minutes}m"
+    
+    info_text = (
+        f"👤 User Info:\n\n"
+        f"💰 Wallet: {data['ocr_wallet']} 🪙\n"
+        f"🏦 Bank: {data['ocr_bank']} 🪙\n"
+        f"🛡️ Shields: {data['shields']}\n\n"
+        f"🐓 Hens: {data['pets']['hen']} - Next eggs: {next_egg}\n"
+        f"🐄 Cows: {data['pets']['cow']} - Next milk: {next_milk}\n\n"
+        f"💎 Total Assets: {data['ocr_wallet'] + data['ocr_bank'] + (data['pets']['hen'] * HEN_COST) + (data['pets']['cow'] * COW_COST)} 🪙"
+    )
+    
+    await update.message.reply_text(info_text)
+
+async def ocrleaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Create a list of users with their total wealth
+    leaderboard = []
+    for user_id, data in user_data.items():
+        try:
+            # Try to get username
+            user = await context.bot.get_chat(user_id)
+            username = user.username or user.first_name
+            total_wealth = data['ocr_wallet'] + data['ocr_bank'] + (data['pets']['hen'] * HEN_COST) + (data['pets']['cow'] * COW_COST)
+            leaderboard.append((username, total_wealth))
+        except:
+            continue
+    
+    # Sort by wealth (descending)
+    leaderboard.sort(key=lambda x: x[1], reverse=True)
+    
+    # Create leaderboard text
+    leaderboard_text = "🏆 OCR Leaderboard:\n\n"
+    for i, (username, wealth) in enumerate(leaderboard[:10], 1):  # Top 10
+        leaderboard_text += f"{i}. {username}: {wealth} 🪙\n"
+    
+    if not leaderboard:
+        leaderboard_text = "No users found in the leaderboard yet!"
+    
+    await update.message.reply_text(leaderboard_text)
 
 async def ocrdeposit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     data = get_user_data(user_id)
     
-    if context.args and context.args[0].isdigit():
+    # Check if command is a reply to a message with amount
+    amount = 0
+    if update.message.reply_to_message and context.args and context.args[0].isdigit():
         amount = int(context.args[0])
-        if amount <= data['ocr_wallet'] and amount > 0:
-            data['ocr_wallet'] -= amount
-            data['ocr_bank'] += amount
-            await update.message.reply_text(f"✅ Deposited {amount} OCR Coin to bank! 🏦")
-        else:
-            await update.message.reply_text("❌ Invalid amount or insufficient funds!")
+    elif context.args and context.args[0].isdigit():
+        amount = int(context.args[0])
+    elif update.message.reply_to_message and update.message.reply_to_message.text:
+        # Try to extract amount from replied message
+        try:
+            amount = int(''.join(filter(str.isdigit, update.message.reply_to_message.text)))
+        except:
+            pass
+    
+    if amount <= 0:
+        await update.message.reply_text("Usage: /ocrdeposit [amount] or reply to a message with amount")
+        return
+        
+    if amount <= data['ocr_wallet']:
+        data['ocr_wallet'] -= amount
+        data['ocr_bank'] += amount
+        await update.message.reply_text(f"✅ Deposited {amount} OCR Coin to bank! 🏦")
     else:
-        await update.message.reply_text("Usage: /ocrdeposit [amount]")
+        await update.message.reply_text("❌ Insufficient funds in wallet!")
 
 async def ocrwithdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     data = get_user_data(user_id)
     
-    if context.args and context.args[0].isdigit():
+    # Check if command is a reply to a message with amount
+    amount = 0
+    if update.message.reply_to_message and context.args and context.args[0].isdigit():
         amount = int(context.args[0])
-        if amount <= data['ocr_bank'] and amount > 0:
-            data['ocr_bank'] -= amount
-            data['ocr_wallet'] += amount
-            await update.message.reply_text(f"✅ Withdrew {amount} OCR Coin from bank! 💰")
-        else:
-            await update.message.reply_text("❌ Invalid amount or insufficient bank balance!")
+    elif context.args and context.args[0].isdigit():
+        amount = int(context.args[0])
+    elif update.message.reply_to_message and update.message.reply_to_message.text:
+        # Try to extract amount from replied message
+        try:
+            amount = int(''.join(filter(str.isdigit, update.message.reply_to_message.text)))
+        except:
+            pass
+    
+    if amount <= 0:
+        await update.message.reply_text("Usage: /ocrwithdraw [amount] or reply to a message with amount")
+        return
+        
+    if amount <= data['ocr_bank']:
+        data['ocr_bank'] -= amount
+        data['ocr_wallet'] += amount
+        await update.message.reply_text(f"✅ Withdrew {amount} OCR Coin from bank! 💰")
     else:
-        await update.message.reply_text("Usage: /ocrwithdraw [amount]")
+        await update.message.reply_text("❌ Insufficient funds in bank!")
 
 async def abhi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     data = get_user_data(user_id)
     
-    if context.args and context.args[0].isdigit():
+    # Check if command is a reply to a message with amount
+    amount = 0
+    if update.message.reply_to_message and context.args and context.args[0].isdigit():
         amount = int(context.args[0])
-        if amount <= data['ocr_wallet'] and amount > 0:
-            if random.random() < 0.5:  # 50% chance to win
-                data['ocr_wallet'] += amount
-                await update.message.reply_text(f"🎊 You won! {amount} OCR Coin doubled! 🪙")
-            else:
-                data['ocr_wallet'] -= amount
-                await update.message.reply_text(f"😢 You lost {amount} OCR Coin. Better luck next time!")
+    elif context.args and context.args[0].isdigit():
+        amount = int(context.args[0])
+    elif update.message.reply_to_message and update.message.reply_to_message.text:
+        # Try to extract amount from replied message
+        try:
+            amount = int(''.join(filter(str.isdigit, update.message.reply_to_message.text)))
+        except:
+            pass
+    
+    if amount <= 0:
+        await update.message.reply_text("Usage: /abhi [amount] or reply to a message with amount")
+        return
+        
+    if amount <= data['ocr_wallet']:
+        if random.random() < 0.5:  # 50% chance to win
+            data['ocr_wallet'] += amount
+            await update.message.reply_text(f"🎊 You won! {amount} OCR Coin doubled! 🪙")
         else:
-            await update.message.reply_text("❌ Invalid amount or insufficient funds!")
+            data['ocr_wallet'] -= amount
+            await update.message.reply_text(f"😢 You lost {amount} OCR Coin. Better luck next time!")
     else:
-        await update.message.reply_text("Usage: /abhi [amount]")
+        await update.message.reply_text("❌ Insufficient funds!")
 
 async def chori_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     thief_data = get_user_data(user_id)
     
-    if not context.args:
-        await update.message.reply_text("Usage: /chori [@username]")
+    target_user_id = None
+    target_username = ""
+    
+    # Check if command is a reply to a message
+    if update.message.reply_to_message:
+        target_user_id = update.message.reply_to_message.from_user.id
+        target_username = update.message.reply_to_message.from_user.username or update.message.reply_to_message.from_user.first_name
+    elif context.args:
+        target_username = context.args[0].replace('@', '')
+        # Try to find the user ID from our mapping
+        target_user_id = username_to_id.get(target_username.lower())
+    
+    if not target_user_id:
+        await update.message.reply_text("Usage: /chori [@username] or reply to a user's message")
+        return
+        
+    if target_user_id == user_id:
+        await update.message.reply_text("❌ You cannot steal from yourself!")
+        return
+        
+    target_data = get_user_data(target_user_id)
+    
+    # Check if target has any coins to steal
+    if target_data['ocr_wallet'] <= 0:
+        await update.message.reply_text("❌ This user has no coins to steal!")
         return
     
-    target_username = context.args[0].replace('@', '')
-    try:
-        # This would need actual user resolution - simplified for example
-        target_data = get_user_data(12345)  # Placeholder
-        if target_data['shields'] > 0:
-            target_data['shields'] -= 1
-            await update.message.reply_text("🛡️ Target has shield! Theft blocked, but shield consumed.")
-        else:
-            steal_amount = int(target_data['ocr_wallet'] * THEFT_PERCENTAGE)
-            thief_data['ocr_wallet'] += steal_amount
-            target_data['ocr_wallet'] -= steal_amount
-            await update.message.reply_text(f"💰 Successfully stole {steal_amount} OCR Coin!")
-    except:
-        await update.message.reply_text("❌ Could not find user or steal coins")
+    if target_data['shields'] > 0:
+        target_data['shields'] -= 1
+        await update.message.reply_text("🛡️ Target has shield! Theft blocked, but shield consumed.")
+    else:
+        steal_amount = min(int(target_data['ocr_wallet'] * THEFT_PERCENTAGE), target_data['ocr_wallet'])
+        thief_data['ocr_wallet'] += steal_amount
+        target_data['ocr_wallet'] -= steal_amount
+        await update.message.reply_text(f"💰 Successfully stole {steal_amount} OCR Coin from {target_username}!")
 
 async def buyshield_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -271,40 +411,268 @@ async def mypets_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     pets_text = f"🐾 Your Pets:\n\n"
     if data['pets']['hen'] > 0:
-        pets_text += f"🐓 Hens: {data['pets']['hen']}\n"
+        eggs_ready = "✅" if can_collect_eggs(user_id) else "⏰"
+        pets_text += f"🐓 Hens: {data['pets']['hen']} {eggs_ready}\n"
     if data['pets']['cow'] > 0:
-        pets_text += f"🐄 Cows: {data['pets']['cow']}\n"
+        milk_ready = "✅" if can_collect_milk(user_id) else "⏰"
+        pets_text += f"🐄 Cows: {data['pets']['cow']} {milk_ready}\n"
     
     if data['pets']['hen'] == 0 and data['pets']['cow'] == 0:
         pets_text += "No pets yet! Visit /ocrmarket"
+    else:
+        pets_text += "\nUse /collecteggs and /collectmilk to gather resources!"
     
     await update.message.reply_text(pets_text)
+
+async def collecteggs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    data = get_user_data(user_id)
+    
+    if data['pets']['hen'] == 0:
+        await update.message.reply_text("❌ You don't have any hens!")
+        return
+        
+    if can_collect_eggs(user_id):
+        eggs = data['pets']['hen'] * 2  # 2 eggs per hen
+        value = eggs * EGG_VALUE
+        data['ocr_wallet'] += value
+        data['last_egg_collection'] = time.time()
+        await update.message.reply_text(f"🥚 Collected {eggs} eggs worth {value} OCR Coin!")
+    else:
+        next_collection = data['last_egg_collection'] + EGG_COOLDOWN
+        wait_time = next_collection - time.time()
+        minutes = int(wait_time // 60)
+        await update.message.reply_text(f"⏰ Your hens need {minutes} more minutes to produce eggs!")
+
+async def collectmilk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    data = get_user_data(user_id)
+    
+    if data['pets']['cow'] == 0:
+        await update.message.reply_text("❌ You don't have any cows!")
+        return
+        
+    if can_collect_milk(user_id):
+        milk = data['pets']['cow']  # 1 milk per cow
+        value = milk * MILK_VALUE
+        data['ocr_wallet'] += value
+        data['last_milk_collection'] = time.time()
+        await update.message.reply_text(f"🥛 Collected {milk} milk worth {value} OCR Coin!")
+    else:
+        next_collection = data['last_milk_collection'] + MILK_COOLDOWN
+        wait_time = next_collection - time.time()
+        hours = int(wait_time // 3600)
+        minutes = int((wait_time % 3600) // 60)
+        await update.message.reply_text(f"⏰ Your cows need {hours}h {minutes}m more to produce milk!")
 
 async def abhigiveyou_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     giver_data = get_user_data(user_id)
     
-    if len(context.args) >= 2 and context.args[0].isdigit():
+    target_user_id = None
+    target_username = ""
+    amount = 0
+    
+    # Check if command is a reply to a message
+    if update.message.reply_to_message:
+        target_user_id = update.message.reply_to_message.from_user.id
+        target_username = update.message.reply_to_message.from_user.username or update.message.reply_to_message.from_user.first_name
+        
+        # Try to extract amount from command args
+        if context.args and context.args[0].isdigit():
+            amount = int(context.args[0])
+        elif update.message.reply_to_message.text:
+            # Try to extract amount from replied message
+            try:
+                amount = int(''.join(filter(str.isdigit, update.message.reply_to_message.text)))
+            except:
+                pass
+    elif len(context.args) >= 2 and context.args[0].isdigit():
         amount = int(context.args[0])
         receiver_username = context.args[1].replace('@', '')
+        # Try to find the user ID from our mapping
+        target_user_id = username_to_id.get(receiver_username.lower())
+        target_username = receiver_username
+    
+    if not target_user_id or amount <= 0:
+        await update.message.reply_text("Usage: /abhigiveyou [amount] [@username] or reply to a message with amount")
+        return
         
-        if amount <= giver_data['ocr_wallet'] and amount > 0:
-            giver_data['ocr_wallet'] -= amount
-            # In real implementation, you'd get receiver's user_id from username
-            await update.message.reply_text(f"🎁 Gift of {amount} OCR Coin sent to {receiver_username}!")
-        else:
-            await update.message.reply_text("❌ Invalid amount or insufficient funds!")
+    if target_user_id == user_id:
+        await update.message.reply_text("❌ You cannot send coins to yourself!")
+        return
+    
+    if amount <= giver_data['ocr_wallet']:
+        giver_data['ocr_wallet'] -= amount
+        receiver_data = get_user_data(target_user_id)
+        receiver_data['ocr_wallet'] += amount
+        
+        # Try to notify the receiver
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"🎁 You received {amount} OCR Coin from {update.message.from_user.first_name}!"
+            )
+        except:
+            pass  # User might have blocked the bot or privacy settings prevent DM
+            
+        await update.message.reply_text(f"🎁 Gift of {amount} OCR Coin sent to {target_username}!")
     else:
-        await update.message.reply_text("Usage: /abhigiveyou [amount] [@username]")
+        await update.message.reply_text("❌ Invalid amount or insufficient funds!")
+
+async def abhigiveuarose_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    
+    # Check if this is the special user
+    if user_id != YOUR_USER_ID:
+        await update.message.reply_text("❌ This command is only for special users!")
+        return
+    
+    target_user_id = None
+    target_username = ""
+    amount = 0
+    
+    # Check if command is a reply to a message
+    if update.message.reply_to_message:
+        target_user_id = update.message.reply_to_message.from_user.id
+        target_username = update.message.reply_to_message.from_user.username or update.message.reply_to_message.from_user.first_name
+        
+        # Try to extract amount from command args
+        if context.args and context.args[0].isdigit():
+            amount = int(context.args[0])
+        elif update.message.reply_to_message.text:
+            # Try to extract amount from replied message
+            try:
+                amount = int(''.join(filter(str.isdigit, update.message.reply_to_message.text)))
+            except:
+                pass
+    elif len(context.args) >= 2 and context.args[0].isdigit():
+        amount = int(context.args[0])
+        receiver_username = context.args[1].replace('@', '')
+        # Try to find the user ID from our mapping
+        target_user_id = username_to_id.get(receiver_username.lower())
+        target_username = receiver_username
+    
+    if not target_user_id or amount <= 0:
+        await update.message.reply_text("Usage: /abhigiveuarose [amount] [@username] or reply to a message with amount")
+        return
+        
+    giver_data = get_user_data(user_id)
+    
+    if amount <= giver_data['ocr_wallet']:
+        giver_data['ocr_wallet'] -= amount
+        receiver_data = get_user_data(target_user_id)
+        receiver_data['ocr_wallet'] += amount
+        
+        # Try to notify the receiver
+        try:
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=f"🌹 You received {amount} OCR Coin as a special gift from {update.message.from_user.first_name}!"
+            )
+        except:
+            pass  # User might have blocked the bot or privacy settings prevent DM
+            
+        await update.message.reply_text(f"🌹 Special gift of {amount} OCR Coin sent to {target_username}!")
+    else:
+        await update.message.reply_text("❌ Invalid amount or insufficient funds!")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "🎮 OCR Game Help:\n\n"
+        "This is a fun economy game where you can earn OCR coins, buy pets, and interact with other players!\n\n"
+        "📋 Available Commands:\n"
+        "/ocrcoin - Claim free coins every 6 hours\n"
+        "/ocrwallet - Check your balance\n"
+        "/ocrinfo - Detailed info about your account\n"
+        "/ocrleaderboard - Top players by wealth\n"
+        "/ocrdeposit [amount] - Deposit coins to bank\n"
+        "/ocrwithdraw [amount] - Withdraw coins from bank\n"
+        "/abhi [amount] - Gamble your coins (50% chance to double)\n"
+        "/chori [@user] - Steal coins from another player\n"
+        "/buyshield - Buy protection against theft\n"
+        "/ocrmarket - View available items\n"
+        "/buyhen - Buy a hen that produces eggs\n"
+        "/buycow - Buy a cow that produces milk\n"
+        "/mypets - Check your pets status\n"
+        "/collecteggs - Collect eggs from your hens\n"
+        "/collectmilk - Collect milk from your cows\n"
+        "/abhigiveyou [amount] [@user] - Gift coins to another player\n\n"
+        "💡 Tips:\n"
+        "• Use shields to protect your coins from theft\n"
+        "• Hens produce eggs every 30 minutes\n"
+        "• Cows produce milk every 6 hours\n"
+        "• Bank your coins to keep them safe from thieves\n"
+        "• Reply to messages with commands for easier use"
+    )
+    await update.message.reply_text(help_text)
+
+# ==================== BLESSINGS FEATURE ====================
+async def send_blessing(context: ContextTypes.DEFAULT_TYPE):
+    """Send blessing message to all groups the bot is in"""
+    for chat_id in context.bot_data.get('group_chats', []):
+        try:
+            keyboard = [[InlineKeyboardButton("Collect Blessing 🙏", callback_data=f"blessing_{int(time.time())}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            message = await context.bot.send_message(
+                chat_id=chat_id,
+                text="🕉️ Jagannath Mahaprabhu ⭕‼️⭕\n\nBlessings to all devotees!",
+                reply_markup=reply_markup
+            )
+            
+            # Store blessing data with expiration time
+            blessings_data[message.message_id] = {
+                'chat_id': chat_id,
+                'expires': time.time() + BLESSING_DURATION
+            }
+        except Exception as e:
+            print(f"Failed to send blessing to {chat_id}: {e}")
+
+async def blessing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    user_name = query.from_user.first_name
+    blessing_id = int(query.data.split('_')[1])
+    
+    # Check if blessing is still valid
+    current_time = time.time()
+    message_id = query.message.message_id
+    
+    if message_id in blessings_data and current_time <= blessings_data[message_id]['expires']:
+        # Blessing is still valid
+        data = get_user_data(user_id)
+        data['ocr_wallet'] += BLESSING_REWARD
+        
+        await query.edit_message_text(
+            f"🕉️ {user_name} received Jagannath Mahaprabhu's blessings! +{BLESSING_REWARD} OCR Coin 🪙"
+        )
+    else:
+        # Blessing has expired
+        await query.edit_message_text(
+            "❌ Sorry, blessings have expired. Better luck next time!"
+        )
 
 # ==================== MESSAGE HANDLING ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
 
+    # Store username to ID mapping for future reference
+    user = update.message.from_user
+    if user.username:
+        username_to_id[user.username.lower()] = user.id
+
+    # Store group chats for blessings
+    if update.message.chat.type in ['group', 'supergroup']:
+        if 'group_chats' not in context.bot_data:
+            context.bot_data['group_chats'] = set()
+        context.bot_data['group_chats'].add(update.message.chat.id)
+
     # Hindi moderation handling
     chat = update.message.chat
-    user = update.message.from_user
     user_id = user.id
     user_name = user.first_name
     username = f"@{user.username}" if user.username else ""
@@ -385,6 +753,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await query.edit_message_text("✅ User has been unmuted by admin.")
+    elif query.data.startswith("blessing_"):
+        await blessing_callback(update, context)
+
+# ==================== JOB QUEUE FOR BLESSINGS ====================
+async def start_blessing_job(application):
+    """Start the job to send blessings every 6 hours"""
+    job_queue = application.job_queue
+    job_queue.run_repeating(send_blessing, interval=6*3600, first=10)
 
 # ==================== MAIN BOT SETUP ====================
 def main():
@@ -400,28 +776,4 @@ def main():
     app.add_handler(CommandHandler("abhilovelist", approved_list_command))
     
     # OCR Game commands
-    app.add_handler(CommandHandler("ocrcoin", ocrcoin_command))
-    app.add_handler(CommandHandler("ocrwallet", ocrwallet_command))
-    app.add_handler(CommandHandler("ocrdeposit", ocrdeposit_command))
-    app.add_handler(CommandHandler("ocrwithdraw", ocrwithdraw_command))
-    app.add_handler(CommandHandler("abhi", abhi_command))
-    app.add_handler(CommandHandler("chori", chori_command))
-    app.add_handler(CommandHandler("buyshield", buyshield_command))
-    app.add_handler(CommandHandler("ocrmarket", ocrmarket_command))
-    app.add_handler(CommandHandler("buyhen", buyhen_command))
-    app.add_handler(CommandHandler("buycow", buycow_command))
-    app.add_handler(CommandHandler("mypets", mypets_command))
-    app.add_handler(CommandHandler("abhigiveyou", abhigiveyou_command))
-    
-    # Message handlers
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    
-    print("✅ Bot started with Hindi moderation + OCR Game features!")
-    print("🎮 Game features: /ocrcoin, /ocrwallet, /ocrmarket, /abhi, /chori")
-    print("🛡️ Moderation: Hindi detection, warnings, approval system")
-    
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+    app.add_handler(CommandHandler("ocrcoin", ocr
